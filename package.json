@@ -1,0 +1,35 @@
+{
+  "name": "jmd-format",
+  "version": "0.0.1",
+  "description": "JMD (JSON Markdown) — structured data format for LLM-driven infrastructure. JavaScript reference implementation.",
+  "type": "module",
+  "author": {
+    "name": "Andreas Ostermeyer",
+    "email": "andreas@ostermeyer.de"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/ostermeyer/jmd-spec",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ostermeyer/jmd-js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ostermeyer/jmd-js/issues"
+  },
+  "keywords": [
+    "jmd",
+    "json-markdown",
+    "llm",
+    "structured-data",
+    "markdown",
+    "mcp",
+    "streaming"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "README.md",
+    "LICENSE"
+  ]
+}
