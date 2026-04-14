@@ -15,7 +15,19 @@ jobs:
         node: [20, 22]
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: jmd-js
+
+      # Conformance fixtures live in jmd-spec. Clone it as a sibling so the
+      # test runner's default path resolution finds it.
+      - uses: actions/checkout@v4
+        with:
+          repository: ostermeyer/jmd-spec
+          path: jmd-spec
+
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+
       - run: npm test
+        working-directory: jmd-js
