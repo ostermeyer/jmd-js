@@ -1,0 +1,40 @@
+name: Release
+
+# Triggered by pushing a tag matching v* (e.g. v0.1.0).
+# The tag's version must match the version field in package.json.
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    # OIDC requires id-token: write. contents: read is sufficient for checkout.
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+
+      # Verify the tag and package.json version agree. A mismatch is almost
+      # always a mistake and should fail the release before publishing.
+      - name: Verify tag matches package version
+        run: |
+          tag="${GITHUB_REF#refs/tags/v}"
+          pkg=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$pkg" ]; then
+            echo "Tag v$tag does not match package.json version $pkg" >&2
+            exit 1
+          fi
+
+      - run: npm test
+
+      # Trusted Publisher (OIDC) — no NPM_TOKEN required. --provenance
+      # attaches a signed build statement that appears on the npm page.
+      - run: npm publish --provenance --access public
