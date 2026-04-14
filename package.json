@@ -3,6 +3,10 @@
   "version": "0.0.1",
   "description": "JMD (JSON Markdown) — structured data format for LLM-driven infrastructure. JavaScript reference implementation.",
   "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
   "author": {
     "name": "Andreas Ostermeyer",
     "email": "andreas@ostermeyer.de"
@@ -28,7 +32,11 @@
   "engines": {
     "node": ">=20"
   },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.js'"
+  },
   "files": [
+    "src/",
     "README.md",
     "LICENSE"
   ]
