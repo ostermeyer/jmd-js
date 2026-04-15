@@ -94,6 +94,11 @@ string chunks into an async iterable of complete lines.
 - Thematic breaks (`---`) as array-item separators (§8.6). Consumed by
   the innermost enclosing array whose most-recent item is a dict with
   nested structures.
+- Depth-qualified array items (`##N -`, §8.6a) and depth+1 items
+  (`##N - key: val`, §8.6b). Parser-tolerance forms: the canonical
+  serializer emits bare `- ` items with thematic-break separators, but
+  the parser accepts the depth-annotated forms that LLMs tend to
+  produce when items sit one heading level below the array heading.
 - **Streaming parser** via async generator: events match the sequence
   defined in §18.2 (document_start, field, field_start, field_content,
   object_start/end, array_start/end, item_start/value/end, scope_reset,
@@ -101,14 +106,11 @@ string chunks into an async iterable of complete lines.
 - **Streaming serializer** via sync generator (`serializeLines`).
 - Line adapter (`toLines`) to convert chunked input to lines.
 
-## Not yet supported
+## Not yet structured
 
-Planned for subsequent releases; parser throws a clear error if encountered.
-
-- Depth-qualified items (`## -`, `### -`).
-- Depth+1 items (items one heading level deeper than the array heading).
-- Schema-specific type expressions, QBE filter conditions — parsed as raw
-  strings today; structured interpretation will follow.
+Schema-specific type expressions (§14) and QBE filter conditions (§13)
+are parsed as raw strings on both this implementation and the Python
+reference. Structured interpretation will follow in a later release.
 
 ## Design
 
