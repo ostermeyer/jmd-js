@@ -1,47 +1,49 @@
 // JMD parser.
 //
 // The parser processes a JMD document line by line, maintaining a scope
-// stack driven by heading depth. It builds a JavaScript value — an object
-// or an array — from the resulting structure.
+// stack driven by heading depth. It has two surfaces:
 //
-// Design notes:
-//   - Stateful via closure (no class).
-//   - Line-oriented: each line is a complete unit that updates the state.
-//     This is the substrate that will eventually feed an async-generator
-//     streaming surface; for now the public entry point is a batch `parse`.
-//   - Parser-tolerant (§22.1): accepts anonymous headings and cosmetic
-//     blank lines without complaint. Intentional generator output
-//     (serialize) is strict; what we see here is what LLMs actually write.
+//   - parse(text)          — batch. Returns { mode, label, frontmatter, value }.
+//   - events(lineSource)   — streaming. Async generator of parse events.
+//
+// Both share the same line-processing core. Events follow the sequence
+// defined in JMD spec §18.2. Parser-tolerant per §22.1.
 
 import { parseScalar, parseKey, parseField } from './value.js'
 
-// A heading begins with one or more `#`. At the root, a mode marker
-// (`!`, `?`, `-`) may immediately follow with no intervening space.
-// Everything after an optional separating space is the label.
 const HEADING = /^(#+)([!?-])?(?:\s+(.*))?$/
 
 export function createParser() {
   let lineNo = 0
 
   // Document-level state.
-  let mode = null                  // 'data' | 'schema' | 'query' | 'delete'
-  let label = null                 // root label (after mode prefix)
+  let mode = null
+  let label = null
   const frontmatter = {}
   let inFrontmatter = true
   let seenRoot = false
-  let root = null                  // the object or array being built
+  let root = null
 
-  // Scope stack. Each entry describes an open container.
-  //   { kind: 'object' | 'array', container, depth }
-  // Depth is the heading depth that opened the scope (root = 1).
-  // Within an array scope, `currentItem` holds the object for the most
-  // recent `-` line so indented continuation fields can attach to it.
+  // Scope stack. Each entry:
+  //   { kind: 'object' | 'array', container, depth, currentItem? }
+  // currentItem lives on array scopes only and holds the object built by
+  // the most recent `- ` line so indented continuations attach to it.
   let stack = []
 
-  // Pending blockquote (multiline value). When a `key:` line (empty value)
-  // appears, we suspend the field and accumulate subsequent `> ` lines.
-  // On the first non-`>` line, the accumulated content is committed.
-  let bq = null  // { container, key, lines }
+  // Pending blockquote state.
+  //   { container, key, lines }
+  let bq = null
+
+  // Events emitted by the current line — drained on each processLine call.
+  let pending = []
+  function emit(type, data) {
+    pending.push(data ? { type, ...data } : { type })
+  }
+  function drain() {
+    const out = pending
+    pending = []
+    return out
+  }
 
   // --- Line processing -----------------------------------------------------
 
@@ -51,31 +53,34 @@ export function createParser() {
 
     if (bq !== null) {
       if (line === '>' || line.startsWith('> ')) {
-        bq.lines.push(line === '>' ? '' : line.slice(2))
-        return
+        const content = line === '>' ? '' : line.slice(2)
+        bq.lines.push(content)
+        emit('field_content', { text: content })
+        return drain()
       }
       commitBlockquote()
-      // Fall through: the current line is an ordinary line in the new context.
     }
 
-    if (/^\s*$/.test(line)) return onBlank()
+    if (/^\s*$/.test(line)) { onBlank(); return drain() }
 
     const h = HEADING.exec(line)
-    if (h) return onHeading(h[1].length, h[2] || '', h[3] || '')
+    if (h) { onHeading(h[1].length, h[2] || '', h[3] || ''); return drain() }
 
-    if (inFrontmatter) return onFrontmatter(line)
+    if (inFrontmatter) { onFrontmatter(line); return drain() }
 
-    if (/^\s{2,}/.test(line)) return onIndented(line)
+    if (/^\s{2,}/.test(line)) { onIndented(line); return drain() }
 
-    if (line === '-' || line.startsWith('- ')) return onItem(line)
+    if (line === '-' || line.startsWith('- ')) { onItem(line); return drain() }
 
-    return onField(line)
+    onField(line)
+    return drain()
   }
 
   // --- Blockquote ----------------------------------------------------------
 
   function startBlockquote(container, key) {
     bq = { container, key, lines: [] }
+    emit('field_start', { key })
   }
 
   function commitBlockquote() {
@@ -86,15 +91,17 @@ export function createParser() {
   // --- Root / frontmatter --------------------------------------------------
 
   function onFrontmatter(line) {
-    // `key: value` or bare `key` (flag-style frontmatter).
     const f = parseField(line)
     if (f) {
-      frontmatter[f.key] = f.empty ? true : f.value
+      const v = f.empty ? true : f.value
+      frontmatter[f.key] = v
+      emit('frontmatter', { key: f.key, value: v })
       return
     }
     const pk = parseKey(line)
     if (pk && pk.rest === '') {
       frontmatter[pk.key] = true
+      emit('frontmatter', { key: pk.key, value: true })
       return
     }
     throw parseError('Unexpected line before root heading')
@@ -112,19 +119,22 @@ export function createParser() {
     if (text === '[]') {
       label = ''
       root = []
-      stack = [{ kind: 'array', container: root, depth: 1 }]
+      stack = [{ kind: 'array', container: root, depth: 1, currentItem: null }]
     } else {
-      label = text  // may be empty — anonymous root is permitted (§3.2a).
+      label = text
       root = {}
       stack = [{ kind: 'object', container: root, depth: 1 }]
     }
+    emit('document_start', { mode, label })
   }
 
   // --- Headings ------------------------------------------------------------
 
   function onHeading(depth, modeMark, text) {
     if (!seenRoot) {
-      if (depth !== 1) throw parseError('Document must begin with a depth-1 heading')
+      if (depth !== 1) {
+        throw parseError('Document must begin with a depth-1 heading')
+      }
       openRoot(modeMark, text)
       return
     }
@@ -132,56 +142,50 @@ export function createParser() {
       throw parseError('Mode markers (!, ?, -) are only valid on the root heading')
     }
 
-    // Pop all scopes at or deeper than this heading.
     popToDepth(depth)
 
-    // Headings inside scope — dispatched by label form.
     if (text === '' || text === undefined) {
-      // Anonymous sub-heading at depth N. We treat it as an empty-label
-      // object heading attached under the current scope with key "".
-      return openObjectScope(depth, '')
+      openObjectScope(depth, '')
+      return
     }
 
-    // Depth-qualified array item: `## -` or `## - key: val`.
-    // (Deferred: full support is planned for 0.2.0; here we reject.)
+    // Depth-qualified array item: `## -` or `## - key: val` — deferred.
     if (text === '-' || text.startsWith('- ')) {
       throw parseError('Depth-qualified array items (## -) are not yet supported')
     }
 
-    // Anonymous sub-array: `## []`.
+    // Anonymous sub-array: `### []` — handled below with the other array forms.
     if (text === '[]') {
-      throw parseError('Anonymous sub-array headings (## []) are not yet supported')
+      openSubArray(depth)
+      return
     }
 
-    // `key[]` — array heading.
     if (text.endsWith('[]')) {
       const keyText = text.slice(0, -2)
       const pk = parseKey(keyText)
-      if (!pk || pk.rest !== '') {
-        throw parseError('Malformed array heading key')
-      }
-      return openArrayScope(depth, pk.key)
+      if (!pk || pk.rest !== '') throw parseError('Malformed array heading key')
+      openArrayScope(depth, pk.key)
+      return
     }
 
-    // `key: value` — scalar heading (terminal).
     const field = parseField(text)
     if (field && !field.empty) {
       const parent = parentObjectAt(depth)
       parent[field.key] = field.value
+      emit('field', { key: field.key, value: field.value })
       return
     }
 
-    // `key:` — scalar heading opening a multiline blockquote.
     if (field && field.empty) {
       const parent = parentObjectAt(depth)
       startBlockquote(parent, field.key)
       return
     }
 
-    // `key` — object heading.
     const pk = parseKey(text)
     if (pk && pk.rest === '') {
-      return openObjectScope(depth, pk.key)
+      openObjectScope(depth, pk.key)
+      return
     }
 
     throw parseError('Malformed heading')
@@ -192,6 +196,7 @@ export function createParser() {
     const obj = {}
     parent[key] = obj
     stack.push({ kind: 'object', container: obj, depth })
+    emit('object_start', { key })
   }
 
   function openArrayScope(depth, key) {
@@ -199,12 +204,24 @@ export function createParser() {
     const arr = []
     parent[key] = arr
     stack.push({ kind: 'array', container: arr, depth, currentItem: null })
+    emit('array_start', { key })
   }
 
-  // Find the object into which a scope or field at `depth` should be placed.
+  function openSubArray(depth) {
+    // `### []`: start a new anonymous array as the next item of the
+    // enclosing array scope.
+    const top = stack[stack.length - 1]
+    if (!top || top.kind !== 'array') {
+      throw parseError('Anonymous sub-array outside array scope')
+    }
+    closeItem(top)
+    const inner = []
+    top.container.push(inner)
+    stack.push({ kind: 'array', container: inner, depth, currentItem: null })
+    emit('array_start', {})
+  }
+
   function parentObjectAt(depth) {
-    // Pop anything deeper than or equal to target (already done by caller),
-    // then the top scope is the parent. It must be an object.
     for (let i = stack.length - 1; i >= 0; i--) {
       const s = stack[i]
       if (s.depth < depth) {
@@ -218,8 +235,42 @@ export function createParser() {
 
   function popToDepth(targetDepth) {
     while (stack.length > 1 && stack[stack.length - 1].depth >= targetDepth) {
-      stack.pop()
+      popScope()
     }
+  }
+
+  function popScope() {
+    const s = stack.pop()
+    if (s.kind === 'array') {
+      closeItem(s)
+      emit('array_end', s.depth === 1 ? {} : { key: keyOfScope(s) })
+    } else {
+      emit('object_end', { key: keyOfScope(s) })
+    }
+  }
+
+  function closeItem(arrayScope) {
+    if (arrayScope.currentItem !== null) {
+      emit('item_end')
+      arrayScope.currentItem = null
+    }
+  }
+
+  // The parent container holds the scope's container under a known key;
+  // look it up once so end events can name what closed.
+  function keyOfScope(scope) {
+    // Walk the stack below; find the container that holds scope.container.
+    // Micro-inefficient but runs once per pop — fine for now.
+    for (let i = stack.length - 1; i >= 0; i--) {
+      const parent = stack[i]
+      const bag = parent.kind === 'array' && parent.currentItem
+        ? parent.currentItem
+        : parent.container
+      for (const k of Object.keys(bag)) {
+        if (bag[k] === scope.container) return k
+      }
+    }
+    return undefined
   }
 
   // --- Bare fields ---------------------------------------------------------
@@ -236,44 +287,45 @@ export function createParser() {
       return
     }
     target[f.key] = f.value
+    emit('field', { key: f.key, value: f.value })
   }
 
   // --- Array items ---------------------------------------------------------
 
   function onItem(line) {
     const top = stack[stack.length - 1]
-    if (top.kind !== 'array') {
-      throw parseError('Array item outside array scope')
-    }
+    if (top.kind !== 'array') throw parseError('Array item outside array scope')
+
+    closeItem(top)
     const rest = line === '-' ? '' : line.slice(2)
 
     if (rest === '') {
-      // `-` on its own: object item, fields follow on indented lines.
       const item = {}
       top.container.push(item)
       top.currentItem = item
+      emit('item_start')
       return
     }
 
     const f = parseField(rest)
     if (f) {
       const item = {}
-      if (!f.empty) item[f.key] = f.value
-      else {
-        // `- key:` starts a blockquote for `key` in a new object item.
-        top.container.push(item)
-        top.currentItem = item
-        startBlockquote(item, f.key)
-        return
-      }
       top.container.push(item)
       top.currentItem = item
+      emit('item_start')
+      if (f.empty) {
+        startBlockquote(item, f.key)
+      } else {
+        item[f.key] = f.value
+        emit('field', { key: f.key, value: f.value })
+      }
       return
     }
 
-    // Scalar item.
-    top.container.push(parseScalar(rest))
+    const value = parseScalar(rest)
+    top.container.push(value)
     top.currentItem = null
+    emit('item_value', { value })
   }
 
   function onIndented(line) {
@@ -289,15 +341,20 @@ export function createParser() {
       return
     }
     top.currentItem[f.key] = f.value
+    emit('field', { key: f.key, value: f.value })
   }
 
   // --- Blank lines ---------------------------------------------------------
 
   function onBlank() {
-    // §7.2a: reset scope to root. Keep only the root scope on the stack.
-    while (stack.length > 1) stack.pop()
-    // Clear array-item tracking on the root if it is an array scope.
-    if (stack[0] && stack[0].kind === 'array') stack[0].currentItem = null
+    // Within an array body, a blank followed by `-` is cosmetic; we don't
+    // have lookahead here, so we optimistically reset and accept it (the
+    // next line either re-enters the scope via `-` at the right depth or
+    // doesn't). Tolerance per §22.1.
+    if (stack.length <= 1) return
+    emit('scope_reset')
+    while (stack.length > 1) popScope()
+    if (stack[0] && stack[0].kind === 'array') closeItem(stack[0])
   }
 
   // --- Finalization --------------------------------------------------------
@@ -307,7 +364,9 @@ export function createParser() {
     if (!seenRoot) {
       throw parseError('Document contained no root heading')
     }
-    return { mode, label, frontmatter, value: root }
+    while (stack.length > 0) popScope()
+    emit('document_end')
+    return drain()
   }
 
   // --- Errors --------------------------------------------------------------
@@ -322,14 +381,41 @@ export function createParser() {
   // --- Public surface ------------------------------------------------------
 
   function parse(text) {
+    // A trailing newline is a line terminator, not a blank line — drop
+    // any empty final element from the split.
     const lines = text.split('\n')
+    if (lines.length && lines[lines.length - 1] === '') lines.pop()
     for (const line of lines) processLine(line)
-    return finish()
+    finish()
+    return { mode, label, frontmatter, value: root }
   }
 
-  return { processLine, finish, parse }
+  async function* events(source) {
+    for await (const line of source) {
+      for (const ev of processLine(line)) yield ev
+    }
+    for (const ev of finish()) yield ev
+  }
+
+  return { processLine, finish, parse, events }
 }
 
 export function parse(text) {
   return createParser().parse(text)
+}
+
+// Line adapter: turn an async iterable of arbitrary string chunks (e.g. a
+// fetch response body stream) into an async iterable of lines. Trailing
+// `\r` is stripped; the final line is emitted even if unterminated.
+export async function* toLines(source) {
+  let buffer = ''
+  for await (const chunk of source) {
+    buffer += typeof chunk === 'string' ? chunk : String(chunk)
+    let idx
+    while ((idx = buffer.indexOf('\n')) !== -1) {
+      yield buffer.slice(0, idx).replace(/\r$/, '')
+      buffer = buffer.slice(idx + 1)
+    }
+  }
+  if (buffer !== '') yield buffer.replace(/\r$/, '')
 }

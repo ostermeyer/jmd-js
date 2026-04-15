@@ -1,7 +1,7 @@
 // jmd-format — JavaScript reference implementation.
 //
-// Public surface. Minimal on purpose: the shape of the API is the
-// message. Everything deeper is available through createParser.
+// Public surface: minimal on purpose. Batch API for the common case,
+// streaming API for large or incremental workloads.
 
-export { parse, createParser } from './parser.js'
-export { serialize } from './serializer.js'
+export { parse, createParser, toLines } from './parser.js'
+export { serialize, serializeLines } from './serializer.js'
