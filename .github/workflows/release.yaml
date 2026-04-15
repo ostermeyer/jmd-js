@@ -23,8 +23,16 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       # Node 22 ships with npm 10; trusted publishing (OIDC) requires ≥ 11.5.
-      - name: Upgrade npm for OIDC trusted publishing
-        run: npm install -g npm@latest
+      # Install to a fresh prefix so the running npm does not overwrite its
+      # own module tree (which triggers MODULE_NOT_FOUND: promise-retry).
+      - name: Install recent npm for OIDC trusted publishing
+        run: |
+          mkdir -p "$RUNNER_TEMP/npm-latest"
+          npm install --prefix="$RUNNER_TEMP/npm-latest" npm@latest
+          echo "$RUNNER_TEMP/npm-latest/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Show npm version
+        run: npm --version
 
       # Verify the tag and package.json version agree. A mismatch is almost
       # always a mistake and should fail the release before publishing.
