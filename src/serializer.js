@@ -29,6 +29,19 @@ export function* serializeLines(value, label = 'Document', frontmatter = null) {
   for (const ln of lines) yield ln + '\n'
 }
 
+// Mode markers attach directly to `#` in the root heading: `#- Order`,
+// `#? Order`, `#! Order`. Callers pass the mark as a `- `, `? ` or `! `
+// prefix on `label`; the serializer attaches it to `#` without a space
+// between them. Plain data documents (no prefix) emit `# Label`.
+function splitLabel(label) {
+  if (label.length >= 2
+      && (label[0] === '-' || label[0] === '?' || label[0] === '!')
+      && label[1] === ' ') {
+    return { mark: label[0], rest: label.slice(2) }
+  }
+  return { mark: '', rest: label }
+}
+
 function emitDocument(value, label, frontmatter, lines) {
   if (frontmatter && Object.keys(frontmatter).length > 0) {
     for (const [k, v] of Object.entries(frontmatter)) {
@@ -38,12 +51,15 @@ function emitDocument(value, label, frontmatter, lines) {
     lines.push('')
   }
 
+  const { mark, rest } = splitLabel(label)
+  const prefix = '#' + mark + ' '
+
   if (Array.isArray(value)) {
-    const head = label === '[]' ? '# []' : '# ' + label + '[]'
+    const head = rest === '[]' ? prefix + '[]' : prefix + rest + '[]'
     lines.push(head)
     writeArrayItems(value, lines, 1)
   } else if (value !== null && typeof value === 'object') {
-    lines.push('# ' + label)
+    lines.push(prefix + rest)
     writeObjectFields(value, lines, 1)
   } else {
     throw new TypeError('Root value must be an object or array')
