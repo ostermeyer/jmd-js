@@ -14,6 +14,11 @@
 //   3. Round-trip — parse(serialize(parse(.jmd).value, ...)) yields the
 //                   same value. Follows from 1 and 2 but validates the
 //                   cycle end-to-end.
+//
+// Fixtures under `tolerance/` test parser-tolerance rules where the input
+// is deliberately non-canonical (e.g. depth-qualified or depth+1 items).
+// Only the Parse test runs for those — Serialize and Round-trip would
+// re-canonicalize and therefore diverge.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -58,6 +63,7 @@ if (!root) {
 } else {
   for (const mode of listModes(root)) {
     const modeDir = path.join(root, mode)
+    const parseOnly = mode === 'tolerance'
     for (const name of listPairs(modeDir)) {
       const jmdText = readFileSync(path.join(modeDir, name + '.jmd'), 'utf8')
       const jsonText = readFileSync(path.join(modeDir, name + '.json'), 'utf8')
@@ -67,6 +73,8 @@ if (!root) {
         const { value } = parse(jmdText)
         assert.deepEqual(value, expected)
       })
+
+      if (parseOnly) continue
 
       test(`${mode}/${name} — serialize`, () => {
         const parsed = parse(jmdText)

@@ -206,16 +206,20 @@ export function createParser() {
       throw parseError('Mode markers (!, ?, -) are only valid on the root heading')
     }
 
+    // Depth-qualified array item (§8.6a) or depth+1 item (§8.6b):
+    // `##N -` or `##N - key: val` starts a new item in an enclosing array.
+    // Resolution prefers the innermost array at depth N; failing that, an
+    // array at depth N-1 (the LLM-natural "items under the heading" form).
+    if (text === '-' || text.startsWith('- ')) {
+      onDepthQualifiedItem(depth, text)
+      return
+    }
+
     popToDepth(depth)
 
     if (text === '' || text === undefined) {
       openObjectScope(depth, '')
       return
-    }
-
-    // Depth-qualified array item: `## -` or `## - key: val` — deferred.
-    if (text === '-' || text.startsWith('- ')) {
-      throw parseError('Depth-qualified array items (## -) are not yet supported')
     }
 
     // Anonymous sub-array: `### []` — handled below with the other array forms.
@@ -355,6 +359,31 @@ export function createParser() {
   }
 
   // --- Array items ---------------------------------------------------------
+
+  function onDepthQualifiedItem(headingDepth, text) {
+    // Find target: innermost array at depth == headingDepth wins (§8.6a).
+    // Else fall back to array at depth == headingDepth - 1 (§8.6b — the
+    // LLM-natural pattern of writing items one heading-level under the
+    // array heading).
+    let sameDepthIdx = -1
+    let parentDepthIdx = -1
+    for (let i = stack.length - 1; i >= 0; i--) {
+      const s = stack[i]
+      if (s.kind !== 'array') continue
+      if (sameDepthIdx === -1 && s.depth === headingDepth) sameDepthIdx = i
+      if (parentDepthIdx === -1 && s.depth === headingDepth - 1) {
+        parentDepthIdx = i
+      }
+    }
+    const targetIdx = sameDepthIdx !== -1 ? sameDepthIdx : parentDepthIdx
+    if (targetIdx === -1) {
+      throw parseError('Depth-qualified item has no matching array scope')
+    }
+    // Close any scopes nested inside the target array.
+    while (stack.length - 1 > targetIdx) popScope()
+    // Reuse the regular item handler with the target array on top.
+    onItem(text)
+  }
 
   function onItem(line) {
     const top = stack[stack.length - 1]
