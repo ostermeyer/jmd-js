@@ -42,14 +42,20 @@ export function serializeScalar(value) {
 }
 
 function needsQuoting(s) {
+  // Quoting rules matching the jmd-format Python reference:
+  //   - empty string, ambiguous scalars, and numbers ⇒ always quote
+  //   - structural prefixes (`# `, `- `) ⇒ quote
+  //   - strings starting with `"` ⇒ quote (otherwise ambiguous with quoted form)
+  //   - strings containing newline or tab ⇒ quote (JSON-escape line structure)
+  //   - internal quotes and backslashes are left bare — the parser is
+  //     tolerant enough to accept them, and Python's serializer does the same.
   if (s === '') return true
   if (s === 'null' || s === 'true' || s === 'false') return true
   if (NUMBER.test(s)) return true
   if (s === '-') return true
-  // §6.1: mandatory quoting triggers.
   if (s.startsWith('# ') || s.startsWith('- ')) return true
-  // Any structural or escape-relevant character forces a quoted form.
-  if (/[\n\r\t"\\]/.test(s)) return true
+  if (s.charCodeAt(0) === 34 /* " */) return true
+  if (/[\n\t]/.test(s)) return true
   return false
 }
 

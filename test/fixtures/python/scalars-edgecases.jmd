@@ -1,0 +1,13 @@
+# Edges
+dash: "-"
+hash: "# label"
+dash_prefix: "- item"
+looks_null: "null"
+looks_true: "true"
+looks_num: "3.14"
+has_newline:
+> line1
+> line2
+## has_tab: "a\tb"
+## has_quote: say "hi"
+## backslash: a\b

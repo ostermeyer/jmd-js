@@ -1,0 +1,13 @@
+# People
+
+## rows[]
+- name: Alice
+
+### addr
+city: Berlin
+
+---
+- name: Bob
+
+### addr
+city: Hamburg

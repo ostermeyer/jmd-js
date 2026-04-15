@@ -75,7 +75,10 @@ if (!root) {
           labelArg(parsed.mode, parsed.label),
           Object.keys(parsed.frontmatter).length ? parsed.frontmatter : null
         )
-        assert.equal(out, jmdText)
+        // Fixture files end with a single trailing newline; the serializer
+        // mirrors the byte form emitted by the Python reference (no
+        // trailing newline — callers add it when writing a file).
+        assert.equal(out + '\n', jmdText)
       })
 
       test(`${mode}/${name} — round-trip`, () => {

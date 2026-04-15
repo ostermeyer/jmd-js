@@ -165,7 +165,7 @@ test('reports line number on parse error', () => {
 
 test('serializes a minimal data document', () => {
   const out = serialize({ id: 42, status: 'pending' }, 'Order')
-  assert.equal(out, '# Order\nid: 42\nstatus: pending\n')
+  assert.equal(out, '# Order\nid: 42\nstatus: pending')
 })
 
 test('quotes strings that would otherwise be misread', () => {
@@ -182,7 +182,7 @@ test('serializes nested objects as headings', () => {
   )
   assert.equal(
     out,
-    '# Order\nid: 42\n## address\ncity: Berlin\nzip: "10115"\n'
+    '# Order\nid: 42\n\n## address\ncity: Berlin\nzip: "10115"'
   )
 })
 
@@ -193,13 +193,13 @@ test('serializes arrays of objects with indented continuation', () => {
   )
   assert.equal(
     out,
-    '# Order\n## items[]\n- sku: A1\n  qty: 2\n- sku: B3\n  qty: 1\n'
+    '# Order\n\n## items[]\n- sku: A1\n  qty: 2\n- sku: B3\n  qty: 1'
   )
 })
 
 test('serializes multiline strings as blockquotes', () => {
   const out = serialize({ body: 'Line 1\nLine 2\n\nLine 4' }, 'Doc')
-  assert.equal(out, '# Doc\nbody:\n> Line 1\n> Line 2\n>\n> Line 4\n')
+  assert.equal(out, '# Doc\nbody:\n> Line 1\n> Line 2\n>\n> Line 4')
 })
 
 test('serializes frontmatter above the root heading', () => {
@@ -210,7 +210,7 @@ test('serializes frontmatter above the root heading', () => {
   )
   assert.equal(
     out,
-    'page: 1\npage-size: 50\n\n# Orders\nstatus: active\n'
+    'page: 1\npage-size: 50\n\n# Orders\nstatus: active'
   )
 })
 

@@ -34,6 +34,13 @@ export function createParser() {
   //   { container, key, lines }
   let bq = null
 
+  // A blank line may or may not terminate the current scope — it depends on
+  // what comes after. We defer the decision: flag the blank, then let the
+  // next real line resolve it. A deeper heading re-enters (no reset); a bare
+  // field at the root indicates a scope return (full reset); a `---` inside
+  // an array is a thematic break (item separator, §8.6).
+  let blankPending = false
+
   // Events emitted by the current line — drained on each processLine call.
   let pending = []
   function emit(type, data) {
@@ -61,19 +68,72 @@ export function createParser() {
       commitBlockquote()
     }
 
-    if (/^\s*$/.test(line)) { onBlank(); return drain() }
+    if (/^\s*$/.test(line)) { blankPending = true; return drain() }
 
     const h = HEADING.exec(line)
-    if (h) { onHeading(h[1].length, h[2] || '', h[3] || ''); return drain() }
+    if (h) {
+      // A heading stands on its own authority — its depth drives scope.
+      blankPending = false
+      onHeading(h[1].length, h[2] || '', h[3] || '')
+      return drain()
+    }
 
     if (inFrontmatter) { onFrontmatter(line); return drain() }
 
-    if (/^\s{2,}/.test(line)) { onIndented(line); return drain() }
+    if (/^\s{2,}/.test(line)) {
+      blankPending = false
+      onIndented(line)
+      return drain()
+    }
 
-    if (line === '-' || line.startsWith('- ')) { onItem(line); return drain() }
+    // Thematic break: `---` (or more) at column 0, only meaningful inside
+    // an array scope, where it terminates the current item.
+    if (/^-{3,}$/.test(line)) {
+      onThematicBreak()
+      return drain()
+    }
 
+    if (line === '-' || line.startsWith('- ')) {
+      if (blankPending) applyBlankReset()
+      onItem(line)
+      return drain()
+    }
+
+    if (blankPending) applyBlankReset()
     onField(line)
     return drain()
+  }
+
+  function applyBlankReset() {
+    blankPending = false
+    if (stack.length <= 1) return
+    emit('scope_reset')
+    while (stack.length > 1) popScope()
+    if (stack[0] && stack[0].kind === 'array') closeItem(stack[0])
+  }
+
+  function onThematicBreak() {
+    blankPending = false
+    // A thematic break is consumed by the innermost enclosing array whose
+    // most-recent item is a dict containing nested structures — this is
+    // the only context where jmd-format emits the break, and the parser
+    // mirrors that rule (spec §8.6). Inner scopes are closed; if no array
+    // on the stack qualifies, the line is tolerated as decoration.
+    let targetIdx = -1
+    for (let i = stack.length - 1; i >= 0; i--) {
+      const s = stack[i]
+      if (s.kind !== 'array') continue
+      const last = s.container[s.container.length - 1]
+      if (last && typeof last === 'object' && !Array.isArray(last)
+          && Object.values(last).some(
+            v => v !== null && typeof v === 'object')) {
+        targetIdx = i
+        break
+      }
+    }
+    if (targetIdx === -1) return
+    while (stack.length - 1 > targetIdx) popScope()
+    closeItem(stack[targetIdx])
   }
 
   // --- Blockquote ----------------------------------------------------------
@@ -117,7 +177,11 @@ export function createParser() {
     else mode = 'data'
 
     if (text === '[]') {
-      label = ''
+      label = '[]'
+      root = []
+      stack = [{ kind: 'array', container: root, depth: 1, currentItem: null }]
+    } else if (text.endsWith('[]')) {
+      label = text.slice(0, -2)
       root = []
       stack = [{ kind: 'array', container: root, depth: 1, currentItem: null }]
     } else {
@@ -342,19 +406,6 @@ export function createParser() {
     }
     top.currentItem[f.key] = f.value
     emit('field', { key: f.key, value: f.value })
-  }
-
-  // --- Blank lines ---------------------------------------------------------
-
-  function onBlank() {
-    // Within an array body, a blank followed by `-` is cosmetic; we don't
-    // have lookahead here, so we optimistically reset and accept it (the
-    // next line either re-enters the scope via `-` at the right depth or
-    // doesn't). Tolerance per §22.1.
-    if (stack.length <= 1) return
-    emit('scope_reset')
-    while (stack.length > 1) popScope()
-    if (stack[0] && stack[0].kind === 'array') closeItem(stack[0])
   }
 
   // --- Finalization --------------------------------------------------------

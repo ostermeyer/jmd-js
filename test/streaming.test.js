@@ -155,7 +155,7 @@ test('serializeLines yields lines with trailing newlines', () => {
   assert.deepEqual(lines, ['# Order\n', 'id: 42\n', 'status: pending\n'])
 })
 
-test('serializeLines and serialize produce the same output', () => {
+test('serializeLines concat equals serialize plus trailing newline', () => {
   const value = {
     id: 42,
     address: { city: 'Berlin' },
@@ -163,5 +163,5 @@ test('serializeLines and serialize produce the same output', () => {
   }
   const streamed = [...serializeLines(value, 'Order')].join('')
   const batch = serialize(value, 'Order')
-  assert.equal(streamed, batch)
+  assert.equal(streamed, batch + '\n')
 })

@@ -12,8 +12,16 @@ implementation exists as the `jmd-format` package on PyPI.
 
 ## Status
 
-**Early development.** The API shape is settled; feature coverage is
-partial and advances toward full specification conformance.
+**Byte-compatible with the Python reference.** The core syntax (all four
+document modes, nested objects, arrays of scalars / objects /
+sub-arrays, multiline blockquotes, frontmatter, thematic breaks)
+produces output identical to `jmd-format` on PyPI for the same input
+value and label — verified by a 10 000-case randomized
+cross-implementation stress test.
+
+Schema-specific type expressions (§14) and QBE filter conditions (§13)
+are still parsed as raw strings on both sides; structured interpretation
+will follow.
 
 ## Install
 
@@ -78,9 +86,14 @@ string chunks into an async iterable of complete lines.
 - Sub-arrays and arrays of arrays (`### []`, §8.4).
 - Blockquote multiline strings (§9.1).
 - Frontmatter (§3.5): both `key: value` and bare-key forms.
-- Blank-line scope reset (§7.2a).
+- Deferred blank-line scope reset (§7.2a) — a blank followed by a
+  deeper heading re-enters the nested scope; a blank followed by a bare
+  field triggers the reset. Matches the Python reference behavior.
 - Scalar headings for scope return (`## total: 84.99`, §7.2).
 - Anonymous headings (§3.2a).
+- Thematic breaks (`---`) as array-item separators (§8.6). Consumed by
+  the innermost enclosing array whose most-recent item is a dict with
+  nested structures.
 - **Streaming parser** via async generator: events match the sequence
   defined in §18.2 (document_start, field, field_start, field_content,
   object_start/end, array_start/end, item_start/value/end, scope_reset,
@@ -92,7 +105,6 @@ string chunks into an async iterable of complete lines.
 
 Planned for subsequent releases; parser throws a clear error if encountered.
 
-- Thematic breaks (`---`) as array-item separators.
 - Depth-qualified items (`## -`, `### -`).
 - Depth+1 items (items one heading level deeper than the array heading).
 - Schema-specific type expressions, QBE filter conditions — parsed as raw

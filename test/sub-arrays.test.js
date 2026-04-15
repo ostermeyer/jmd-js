@@ -21,7 +21,7 @@ test('serializes a matrix of scalars', () => {
   const out = serialize({ matrix: [[1, 2], [3, 4]] }, 'Data')
   assert.equal(
     out,
-    '# Data\n## matrix[]\n### []\n- 1\n- 2\n### []\n- 3\n- 4\n'
+    '# Data\n\n## matrix[]\n### []\n- 1\n- 2\n### []\n- 3\n- 4'
   )
 })
 
@@ -72,12 +72,12 @@ test('parses a root-level array of arrays', () => {
 })
 
 test('serializes a root-level array of arrays', () => {
-  const out = serialize([[1, 2], [3, 4]], '')
-  assert.equal(out, '# []\n## []\n- 1\n- 2\n## []\n- 3\n- 4\n')
+  const out = serialize([[1, 2], [3, 4]], '[]')
+  assert.equal(out, '# []\n## []\n- 1\n- 2\n## []\n- 3\n- 4')
 })
 
 test('round-trips a root-level array of arrays', () => {
   const original = [[1, 2, 3], [4, 5], [6]]
-  const { value } = parse(serialize(original, ''))
+  const { value } = parse(serialize(original, '[]'))
   assert.deepEqual(value, original)
 })

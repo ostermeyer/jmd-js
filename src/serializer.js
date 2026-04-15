@@ -6,119 +6,173 @@
 //                                                  trailing newlines. Suitable
 //                                                  for streaming to a transport.
 //   - serialize(value, label, frontmatter)       — returns the full document
-//                                                  as a single string.
+//                                                  as a single string (no
+//                                                  trailing newline), matching
+//                                                  the byte form emitted by
+//                                                  the jmd-format Python
+//                                                  reference implementation.
 //
 // Generator-strict per §22.1: output matches the canonical form that a
-// conforming parser will accept without relying on tolerance.
+// conforming parser accepts without tolerance.
 
 import { serializeScalar, serializeKey } from './value.js'
 
-export function* serializeLines(value, label = '', frontmatter = null) {
+export function serialize(value, label = 'Document', frontmatter = null) {
+  const lines = []
+  emitDocument(value, label, frontmatter, lines)
+  return lines.join('\n')
+}
+
+export function* serializeLines(value, label = 'Document', frontmatter = null) {
+  const lines = []
+  emitDocument(value, label, frontmatter, lines)
+  for (const ln of lines) yield ln + '\n'
+}
+
+function emitDocument(value, label, frontmatter, lines) {
   if (frontmatter && Object.keys(frontmatter).length > 0) {
     for (const [k, v] of Object.entries(frontmatter)) {
-      if (v === true) yield serializeKey(k) + '\n'
-      else yield serializeKey(k) + ': ' + serializeScalar(v) + '\n'
+      if (v === true) lines.push(serializeKey(k))
+      else lines.push(serializeKey(k) + ': ' + serializeScalar(v))
     }
-    yield '\n'
+    lines.push('')
   }
 
   if (Array.isArray(value)) {
-    const rootLabel = label === '' ? '[]' : label + ' []'
-    yield '# ' + rootLabel + '\n'
-    yield* emitArrayBody(value, 2)
+    const head = label === '[]' ? '# []' : '# ' + label + '[]'
+    lines.push(head)
+    writeArrayItems(value, lines, 1)
   } else if (value !== null && typeof value === 'object') {
-    yield (label === '' ? '#' : '# ' + label) + '\n'
-    yield* emitObjectBody(value, 2)
+    lines.push('# ' + label)
+    writeObjectFields(value, lines, 1)
   } else {
     throw new TypeError('Root value must be an object or array')
   }
 }
 
-export function serialize(value, label = '', frontmatter = null) {
-  let out = ''
-  for (const line of serializeLines(value, label, frontmatter)) out += line
-  return out
+function heading(depth) {
+  return '#'.repeat(depth) + ' '
 }
 
-function* emitObjectBody(obj, depth) {
-  // Scalars first, then nested — keeps bare fields at the top of the scope
-  // and avoids needing scalar headings for scope return.
-  const scalars = []
-  const nested = []
-  for (const [k, v] of Object.entries(obj)) {
-    if (isNested(v)) nested.push([k, v])
-    else scalars.push([k, v])
+function writeMultiline(value, lines) {
+  for (const part of value.split('\n')) {
+    lines.push(part === '' ? '>' : '> ' + part)
   }
-  for (const [k, v] of scalars) yield* emitScalarField(k, v)
-  for (const [k, v] of nested) yield* emitNested(k, v, depth)
 }
 
-function* emitScalarField(key, value) {
-  const k = serializeKey(key)
-  if (typeof value === 'string' && value.includes('\n')) {
-    yield k + ':' + '\n'
-    for (const ln of value.split('\n')) {
-      yield (ln === '' ? '>' : '> ' + ln) + '\n'
+function writeObjectFields(obj, lines, depth) {
+  let needsHeading = false
+  for (const [key, value] of Object.entries(obj)) {
+    const k = serializeKey(key)
+    if (isPlainObject(value)) {
+      lines.push('')
+      lines.push(heading(depth + 1) + k)
+      writeObjectFields(value, lines, depth + 1)
+      needsHeading = true
+    } else if (Array.isArray(value)) {
+      lines.push('')
+      lines.push(heading(depth + 1) + k + '[]')
+      writeArrayItems(value, lines, depth + 1)
+      needsHeading = true
+    } else if (typeof value === 'string' && value.includes('\n')) {
+      lines.push((needsHeading ? heading(depth + 1) : '') + k + ':')
+      writeMultiline(value, lines)
+      needsHeading = true
+    } else if (needsHeading) {
+      lines.push(heading(depth + 1) + k + ': ' + serializeScalar(value))
+    } else {
+      lines.push(k + ': ' + serializeScalar(value))
+    }
+  }
+}
+
+function writeArrayItems(lst, lines, depth) {
+  if (lst.length === 0) return
+
+  const allLists = lst.every(i => Array.isArray(i))
+  const allDicts = lst.every(isPlainObject)
+  const allScalars = lst.every(i => !isNested(i))
+
+  if (allLists) {
+    for (const item of lst) {
+      lines.push(heading(depth + 1) + '[]')
+      writeArrayItems(item, lines, depth + 1)
     }
     return
   }
-  yield k + ': ' + serializeScalar(value) + '\n'
-}
 
-function* emitNested(key, value, depth) {
-  const prefix = '#'.repeat(depth) + ' '
-  const k = serializeKey(key)
-  if (Array.isArray(value)) {
-    yield prefix + k + '[]' + '\n'
-    yield* emitArrayBody(value, depth + 1)
+  if (allDicts) {
+    const hasNested = lst.some(item =>
+      Object.values(item).some(isNested))
+    for (let i = 0; i < lst.length; i++) {
+      writeDictItem(lst[i], lines, depth, i > 0 && hasNested)
+    }
     return
   }
-  yield prefix + k + '\n'
-  yield* emitObjectBody(value, depth + 1)
-}
 
-function* emitArrayBody(arr, depth) {
-  for (const item of arr) {
-    if (Array.isArray(item)) {
-      // Sub-array: anonymous heading at depth.
-      yield '#'.repeat(depth) + ' []' + '\n'
-      yield* emitArrayBody(item, depth + 1)
-      continue
+  if (allScalars) {
+    for (const item of lst) {
+      lines.push('- ' + serializeScalar(item))
     }
-    if (item === null || typeof item !== 'object') {
-      yield '- ' + serializeScalar(item) + '\n'
-      continue
-    }
-    yield* emitObjectItem(item, depth)
-  }
-}
-
-function* emitObjectItem(item, depth) {
-  const entries = Object.entries(item)
-  if (entries.length === 0) {
-    yield '-' + '\n'
     return
   }
-  let first = true
-  const nested = []
-  for (const [k, v] of entries) {
-    if (isNested(v)) { nested.push([k, v]); continue }
-    const prefix = first ? '- ' : '  '
-    yield prefix + emitInlineKeyValue(k, v) + '\n'
-    first = false
+
+  // Heterogeneous array.
+  //
+  // The C-accelerated Python reference does not insert thematic breaks
+  // inside a heterogeneous array — items simply follow one another. We
+  // match that form byte-for-byte.
+  for (const item of lst) {
+    if (isPlainObject(item)) {
+      writeDictItem(item, lines, depth, false)
+    } else if (Array.isArray(item)) {
+      lines.push(heading(depth + 1) + '[]')
+      writeArrayItems(item, lines, depth + 1)
+    } else {
+      lines.push('- ' + serializeScalar(item))
+    }
   }
-  if (first) yield '-' + '\n'
-  for (const [k, v] of nested) yield* emitNested(k, v, depth)
 }
 
-function emitInlineKeyValue(key, value) {
-  const k = serializeKey(key)
-  if (typeof value === 'string' && value.includes('\n')) {
-    // Blockquote continuations inside item bodies are not yet expressible
-    // cleanly; fall back to the JSON escape form (§9.2) for this value.
-    return k + ': ' + JSON.stringify(value)
+function writeDictItem(item, lines, depth, separatorNeeded) {
+  const scalarFields = []
+  const nestedFields = []
+  for (const [k, v] of Object.entries(item)) {
+    if (isNested(v)) nestedFields.push([k, v])
+    else scalarFields.push([k, v])
   }
-  return k + ': ' + serializeScalar(value)
+
+  if (separatorNeeded) {
+    // Match the C-accelerated Python serializer (the default in jmd-format):
+    // blank line before the `---`, but the next `- ` follows immediately on
+    // the next line — no blank after the thematic break.
+    lines.push('')
+    lines.push('---')
+  }
+
+  if (scalarFields.length === 0) {
+    lines.push('-')
+  } else {
+    let first = true
+    for (const [k, v] of scalarFields) {
+      const sv = serializeScalar(v)
+      const qk = serializeKey(k)
+      if (first) {
+        lines.push('- ' + qk + ': ' + sv)
+        first = false
+      } else {
+        lines.push('  ' + qk + ': ' + sv)
+      }
+    }
+  }
+
+  if (nestedFields.length > 0) {
+    writeObjectFields(Object.fromEntries(nestedFields), lines, depth)
+  }
+}
+
+function isPlainObject(v) {
+  return v !== null && typeof v === 'object' && !Array.isArray(v)
 }
 
 function isNested(v) {
