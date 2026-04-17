@@ -127,4 +127,6 @@ parser side, following §22.1 of the specification.
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+Apache 2.0 — see [LICENSE](./LICENSE).
+
+The JMD format specification is licensed separately under [CC BY 4.0](https://github.com/ostermeyer/jmd-spec/blob/main/LICENSE).
