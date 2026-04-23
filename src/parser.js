@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // JMD parser.
 //
 // The parser processes a JMD document line by line, maintaining a scope

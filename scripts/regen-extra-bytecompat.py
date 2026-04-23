@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Generate extra Python-authored byte-compat fixtures.
 
 These cases exercise constructs the hand-authored spec fixtures do not

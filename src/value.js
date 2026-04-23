@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Scalar values and keys.
 //
 // Parsing and serialization of the smallest JMD units: scalar values

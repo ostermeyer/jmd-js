@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Byte-compatibility with the jmd-format Python reference implementation.
 //
 // For every paired fixture in the conformance suite we compare the JS

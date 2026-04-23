@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Regenerate jmd-spec conformance fixtures from Python canonical output.
 
 The .json files remain the authoritative data; we rewrite each .jmd so

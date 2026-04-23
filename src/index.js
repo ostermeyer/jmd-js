@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // jmd-format — JavaScript reference implementation.
 //
 // Public surface: minimal on purpose. Batch API for the common case,
