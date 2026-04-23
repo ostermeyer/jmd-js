@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Conformance against the canonical JMD test suite.
 //
-// Fixtures live in the sibling jmd-spec repository at conformance/.
-// Override the search path with the JMD_FIXTURES environment variable
-// if jmd-spec is checked out elsewhere.
+// Fixtures live in jmd-spec at conformance/. They are located via the
+// first path that exists, in this order:
+//   1. the JMD_FIXTURES environment variable (explicit override)
+//   2. vendor/jmd-spec/conformance/ (git submodule, preferred in CI)
+//   3. ../jmd-spec/conformance/ (sibling checkout in a workspace)
 //
 // Each fixture is a pair <name>.jmd + <name>.json. For every pair we
 // run three tests:
@@ -34,8 +36,15 @@ const MODE_PREFIX = { data: '', schema: '! ', query: '? ', delete: '- ' }
 function findFixturesDir() {
   if (process.env.JMD_FIXTURES) return process.env.JMD_FIXTURES
   const here = path.dirname(fileURLToPath(import.meta.url))
-  const candidate = path.resolve(here, '..', '..', 'jmd-spec', 'conformance')
-  return existsSync(candidate) ? candidate : null
+  const repoRoot = path.resolve(here, '..')
+  const candidates = [
+    path.resolve(repoRoot, 'vendor', 'jmd-spec', 'conformance'),
+    path.resolve(repoRoot, '..', 'jmd-spec', 'conformance'),
+  ]
+  for (const c of candidates) {
+    if (existsSync(c)) return c
+  }
+  return null
 }
 
 function listModes(root) {
