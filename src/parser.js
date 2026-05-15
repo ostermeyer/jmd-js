@@ -9,10 +9,36 @@
 //
 // Both share the same line-processing core. Events follow the sequence
 // defined in JMD spec §18.2. Parser-tolerant per §22.1.
+//
+// Spec coverage: v0.3.3 — including §7.4 repeated-heading promotion with
+// three structured errors (sigil_conflict, repeated_explicit_array,
+// repeated_scalar_key), §3.5.1 frontmatter `---` marker tolerance, and
+// §5.2 multi-line block scalars (`|` literal, `>` folded).
 
 import { parseScalar, parseKey, parseField } from './value.js'
 
 const HEADING = /^(#+)([!?-])?(?:\s+(.*))?$/
+
+// §7.4 — kinds tracked per object scope to detect repeated-heading
+// conflicts and to drive implicit-array promotion.
+const K_OBJECT_HEADING = 1   // `## foo` opened an object scope
+const K_ARRAY_SIGIL = 2      // `## foo[]` opened an explicit array
+const K_ARRAY_PROMOTED = 3   // two `## foo` collapsed into an array
+const K_SCALAR_BARE = 4      // `foo: 1` at column 0
+const K_SCALAR_HEADING = 5   // `## foo: 1`
+
+// Structured parse error — `kind` lets callers distinguish the §7.4
+// conditions (and any other tagged failures we add later) from generic
+// malformed-input errors. The line number is appended to the message
+// for legibility but also stored separately on the error.
+export class JMDParseError extends Error {
+  constructor(kind, message, line) {
+    super(message + ' (line ' + line + ')')
+    this.name = 'JMDParseError'
+    this.kind = kind
+    this.line = line
+  }
+}
 
 export function createParser() {
   let lineNo = 0
@@ -22,18 +48,27 @@ export function createParser() {
   let label = null
   const frontmatter = {}
   let inFrontmatter = true
+  let frontmatterStarted = false  // §3.5.1: have we seen any frontmatter field?
   let seenRoot = false
   let root = null
 
   // Scope stack. Each entry:
-  //   { kind: 'object' | 'array', container, depth, currentItem? }
-  // currentItem lives on array scopes only and holds the object built by
-  // the most recent `- ` line so indented continuations attach to it.
+  //   { kind: 'object' | 'array', container, depth,
+  //     seen: Map<key, K_*>,        // object scopes only
+  //     currentItem?, itemSeen? }   // array scopes only
+  // currentItem lives on array scopes and holds the object built by the
+  // most recent `- ` line so indented continuations attach to it.
+  // itemSeen mirrors `seen` for that per-item object.
   let stack = []
 
   // Pending blockquote state.
   //   { container, key, lines }
   let bq = null
+
+  // Pending block-scalar state (§5.2).
+  //   { container, key, kind: '|' | '>', lines, baseIndent }
+  // baseIndent is null until the first content line establishes it.
+  let block = null
 
   // A blank line may or may not terminate the current scope — it depends on
   // what comes after. We defer the decision: flag the blank, then let the
@@ -58,6 +93,11 @@ export function createParser() {
   function processLine(rawLine) {
     lineNo++
     const line = rawLine.replace(/\r$/, '')
+
+    if (block !== null) {
+      if (processBlockLine(line)) return drain()
+      // Block ended; fall through to normal line handling.
+    }
 
     if (bq !== null) {
       if (line === '>' || line.startsWith('> ')) {
@@ -149,23 +189,118 @@ export function createParser() {
     bq = null
   }
 
+  // --- Block scalars (§5.2) ------------------------------------------------
+
+  function startBlock(container, key, kind) {
+    block = { container, key, kind, lines: [], baseIndent: null }
+    emit('field_start', { key })
+  }
+
+  // Returns true if the line was consumed by the block scalar, false if it
+  // signals the block has ended and the line must be re-dispatched normally.
+  function processBlockLine(line) {
+    if (line === '') {
+      block.lines.push('')
+      return true
+    }
+    const m = /^(\s*)/.exec(line)
+    const indent = m[0].length
+    if (block.baseIndent === null) {
+      if (indent === 0) {
+        commitBlock()
+        return false
+      }
+      block.baseIndent = indent
+      block.lines.push(line.slice(indent))
+      return true
+    }
+    if (indent < block.baseIndent && /\S/.test(line)) {
+      commitBlock()
+      return false
+    }
+    block.lines.push(line.slice(block.baseIndent))
+    return true
+  }
+
+  function commitBlock() {
+    const lines = block.lines.slice()
+    // Drop trailing blank lines for both kinds — spec §5.2 treats the
+    // trailing newline as a line-terminator, not part of the value.
+    while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+    const value = block.kind === '|' ? lines.join('\n') : foldLines(lines)
+    block.container[block.key] = value
+    emit('field', { key: block.key, value })
+    block = null
+  }
+
+  // Folded block scalar fold (§5.2):
+  //   consecutive non-blank lines  →  joined with single space
+  //   one blank between groups     →  one newline
+  //   N+1 blank lines              →  N newlines
+  function foldLines(lines) {
+    let out = ''
+    let group = []
+    let blanks = 0
+    function flushGroup() {
+      if (group.length > 0) {
+        out += group.join(' ')
+        group = []
+      }
+    }
+    for (const ln of lines) {
+      if (ln === '') {
+        flushGroup()
+        blanks++
+      } else {
+        if (blanks > 0) {
+          out += '\n'.repeat(blanks)
+          blanks = 0
+        }
+        group.push(ln)
+      }
+    }
+    flushGroup()
+    return out
+  }
+
   // --- Root / frontmatter --------------------------------------------------
 
   function onFrontmatter(line) {
+    // §3.5.1: tolerate `---` (or more) marker lines bracketing the
+    // frontmatter block. A marker before any field opens it; a marker
+    // after the last field separates it from the root heading. Both
+    // forms are consumed without emitting a frontmatter event.
+    if (/^-{3,}$/.test(line)) {
+      // Marker is structural-only — no state change beyond ignoring it.
+      return
+    }
     const f = parseField(line)
     if (f) {
-      const v = f.empty ? true : f.value
-      frontmatter[f.key] = v
-      emit('frontmatter', { key: f.key, value: v })
+      if (f.empty) {
+        // D12: multi-line frontmatter value enters a blockquote that
+        // collects subsequent `> ...` lines; commit assigns the joined
+        // string to frontmatter[key] (handled by the bq state machine).
+        frontmatterStarted = true
+        startBlockquote(frontmatter, f.key)
+        return
+      }
+      frontmatter[f.key] = f.value
+      frontmatterStarted = true
+      emit('frontmatter', { key: f.key, value: f.value })
       return
     }
     const pk = parseKey(line)
     if (pk && pk.rest === '') {
       frontmatter[pk.key] = true
+      frontmatterStarted = true
       emit('frontmatter', { key: pk.key, value: true })
       return
     }
-    throw parseError('Unexpected line before root heading')
+    throw new JMDParseError(
+      'malformed_frontmatter',
+      'Unexpected line before root heading',
+      lineNo,
+    )
   }
 
   function openRoot(modeMark, text) {
@@ -180,17 +315,28 @@ export function createParser() {
     if (text === '[]') {
       label = '[]'
       root = []
-      stack = [{ kind: 'array', container: root, depth: 1, currentItem: null }]
+      stack = [arrayScope(root, 1)]
     } else if (text.endsWith('[]')) {
       label = text.slice(0, -2)
       root = []
-      stack = [{ kind: 'array', container: root, depth: 1, currentItem: null }]
+      stack = [arrayScope(root, 1)]
     } else {
       label = text
       root = {}
-      stack = [{ kind: 'object', container: root, depth: 1 }]
+      stack = [objectScope(root, 1)]
     }
     emit('document_start', { mode, label })
+  }
+
+  function objectScope(container, depth) {
+    return { kind: 'object', container, depth, seen: new Map() }
+  }
+
+  function arrayScope(container, depth) {
+    return {
+      kind: 'array', container, depth,
+      currentItem: null, itemSeen: null,
+    }
   }
 
   // --- Headings ------------------------------------------------------------
@@ -198,13 +344,21 @@ export function createParser() {
   function onHeading(depth, modeMark, text) {
     if (!seenRoot) {
       if (depth !== 1) {
-        throw parseError('Document must begin with a depth-1 heading')
+        throw new JMDParseError(
+          'malformed_root',
+          'Document must begin with a depth-1 heading',
+          lineNo,
+        )
       }
       openRoot(modeMark, text)
       return
     }
     if (modeMark) {
-      throw parseError('Mode markers (!, ?, -) are only valid on the root heading')
+      throw new JMDParseError(
+        'malformed_heading',
+        'Mode markers (!, ?, -) are only valid on the root heading',
+        lineNo,
+      )
     }
 
     // Depth-qualified array item (§8.6a) or depth+1 item (§8.6b):
@@ -232,22 +386,37 @@ export function createParser() {
     if (text.endsWith('[]')) {
       const keyText = text.slice(0, -2)
       const pk = parseKey(keyText)
-      if (!pk || pk.rest !== '') throw parseError('Malformed array heading key')
+      if (!pk || pk.rest !== '') {
+        throw new JMDParseError(
+          'malformed_heading',
+          'Malformed array heading key',
+          lineNo,
+        )
+      }
       openArrayScope(depth, pk.key)
       return
     }
 
     const field = parseField(text)
-    if (field && !field.empty) {
-      const parent = parentObjectAt(depth)
-      parent[field.key] = field.value
+    if (field && field.value !== undefined) {
+      const { container, seen } = scalarParentAt(depth)
+      checkScalar(seen, field.key, K_SCALAR_HEADING)
+      container[field.key] = field.value
       emit('field', { key: field.key, value: field.value })
       return
     }
 
     if (field && field.empty) {
-      const parent = parentObjectAt(depth)
-      startBlockquote(parent, field.key)
+      const { container, seen } = scalarParentAt(depth)
+      checkScalar(seen, field.key, K_SCALAR_HEADING)
+      startBlockquote(container, field.key)
+      return
+    }
+
+    if (field && field.block) {
+      const { container, seen } = scalarParentAt(depth)
+      checkScalar(seen, field.key, K_SCALAR_HEADING)
+      startBlock(container, field.key, field.block)
       return
     }
 
@@ -257,22 +426,90 @@ export function createParser() {
       return
     }
 
-    throw parseError('Malformed heading')
+    throw new JMDParseError(
+      'malformed_heading',
+      'Malformed heading',
+      lineNo,
+    )
   }
 
   function openObjectScope(depth, key) {
-    const parent = parentObjectAt(depth)
+    const parent = parentScopeAt(depth)
+    const { container, seen } = parentContainerAndSeen(parent)
+    const prior = seen ? seen.get(key) : undefined
+
+    if (prior === K_ARRAY_SIGIL) {
+      throw new JMDParseError(
+        'sigil_conflict',
+        'Repeated heading "' + key + '" mixes [] sigil with bare form',
+        lineNo,
+      )
+    }
+    if (prior === K_SCALAR_BARE || prior === K_SCALAR_HEADING) {
+      throw new JMDParseError(
+        'repeated_scalar_key',
+        'Key "' + key + '" first seen as scalar, then as object heading',
+        lineNo,
+      )
+    }
+    if (prior === K_ARRAY_PROMOTED) {
+      // Third+ occurrence: append a fresh object to the existing array.
+      const arr = container[key]
+      const obj = {}
+      arr.push(obj)
+      stack.push(objectScope(obj, depth))
+      emit('object_start', { key })
+      return
+    }
+    if (prior === K_OBJECT_HEADING) {
+      // §7.4: second occurrence promotes the scalar object to an array.
+      const existing = container[key]
+      const obj = {}
+      const arr = [existing, obj]
+      container[key] = arr
+      if (seen) seen.set(key, K_ARRAY_PROMOTED)
+      stack.push(objectScope(obj, depth))
+      emit('object_start', { key })
+      return
+    }
+    // First occurrence — plain object heading.
     const obj = {}
-    parent[key] = obj
-    stack.push({ kind: 'object', container: obj, depth })
+    container[key] = obj
+    if (seen) seen.set(key, K_OBJECT_HEADING)
+    stack.push(objectScope(obj, depth))
     emit('object_start', { key })
   }
 
   function openArrayScope(depth, key) {
-    const parent = parentObjectAt(depth)
+    const parent = parentScopeAt(depth)
+    const { container, seen } = parentContainerAndSeen(parent)
+    const prior = seen ? seen.get(key) : undefined
+
+    if (prior === K_ARRAY_SIGIL) {
+      throw new JMDParseError(
+        'repeated_explicit_array',
+        'Repeated explicit-array heading "' + key + '"',
+        lineNo,
+      )
+    }
+    if (prior === K_OBJECT_HEADING || prior === K_ARRAY_PROMOTED) {
+      throw new JMDParseError(
+        'sigil_conflict',
+        'Heading "' + key + '" first appeared without [], then with []',
+        lineNo,
+      )
+    }
+    if (prior === K_SCALAR_BARE || prior === K_SCALAR_HEADING) {
+      throw new JMDParseError(
+        'repeated_scalar_key',
+        'Key "' + key + '" first seen as scalar, then as array heading',
+        lineNo,
+      )
+    }
     const arr = []
-    parent[key] = arr
-    stack.push({ kind: 'array', container: arr, depth, currentItem: null })
+    container[key] = arr
+    if (seen) seen.set(key, K_ARRAY_SIGIL)
+    stack.push(arrayScope(arr, depth))
     emit('array_start', { key })
   }
 
@@ -281,25 +518,84 @@ export function createParser() {
     // enclosing array scope.
     const top = stack[stack.length - 1]
     if (!top || top.kind !== 'array') {
-      throw parseError('Anonymous sub-array outside array scope')
+      throw new JMDParseError(
+        'malformed_heading',
+        'Anonymous sub-array outside array scope',
+        lineNo,
+      )
     }
     closeItem(top)
     const inner = []
     top.container.push(inner)
-    stack.push({ kind: 'array', container: inner, depth, currentItem: null })
+    stack.push(arrayScope(inner, depth))
     emit('array_start', {})
   }
 
-  function parentObjectAt(depth) {
+  // Find the scope that should receive a scalar field at the given heading
+  // depth, returning its container plus the `seen` map for §7.4 tracking.
+  function scalarParentAt(depth) {
     for (let i = stack.length - 1; i >= 0; i--) {
       const s = stack[i]
-      if (s.depth < depth) {
-        if (s.kind === 'object') return s.container
-        if (s.kind === 'array' && s.currentItem) return s.currentItem
-        throw parseError('Field has no enclosing object scope')
+      if (s.depth >= depth) continue
+      if (s.kind === 'object') {
+        return { container: s.container, seen: s.seen }
       }
+      if (s.kind === 'array' && s.currentItem) {
+        // Per-item object: track its own seen-keys so repeated keys on
+        // one item still surface as repeated_scalar_key.
+        if (s.itemSeen === null) s.itemSeen = new Map()
+        return { container: s.currentItem, seen: s.itemSeen }
+      }
+      throw new JMDParseError(
+        'malformed_field',
+        'Field has no enclosing object scope',
+        lineNo,
+      )
     }
-    throw parseError('No enclosing scope for depth ' + depth)
+    throw new JMDParseError(
+      'malformed_field',
+      'No enclosing scope for depth ' + depth,
+      lineNo,
+    )
+  }
+
+  function parentScopeAt(depth) {
+    for (let i = stack.length - 1; i >= 0; i--) {
+      if (stack[i].depth < depth) return stack[i]
+    }
+    throw new JMDParseError(
+      'malformed_heading',
+      'No enclosing scope for depth ' + depth,
+      lineNo,
+    )
+  }
+
+  function parentContainerAndSeen(scope) {
+    if (scope.kind === 'object') {
+      return { container: scope.container, seen: scope.seen }
+    }
+    if (scope.kind === 'array' && scope.currentItem) {
+      if (scope.itemSeen === null) scope.itemSeen = new Map()
+      return { container: scope.currentItem, seen: scope.itemSeen }
+    }
+    throw new JMDParseError(
+      'malformed_heading',
+      'Heading inside an array scope needs an active item',
+      lineNo,
+    )
+  }
+
+  function checkScalar(seen, key, kind) {
+    if (!seen) return
+    const prior = seen.get(key)
+    if (prior !== undefined) {
+      throw new JMDParseError(
+        'repeated_scalar_key',
+        'Key "' + key + '" repeated',
+        lineNo,
+      )
+    }
+    seen.set(key, kind)
   }
 
   function popToDepth(targetDepth) {
@@ -322,6 +618,7 @@ export function createParser() {
     if (arrayScope.currentItem !== null) {
       emit('item_end')
       arrayScope.currentItem = null
+      arrayScope.itemSeen = null
     }
   }
 
@@ -335,8 +632,18 @@ export function createParser() {
       const bag = parent.kind === 'array' && parent.currentItem
         ? parent.currentItem
         : parent.container
+      if (Array.isArray(bag)) {
+        // Promoted array: search every parent dict in the bag for the
+        // container reference (rare path; small N).
+        continue
+      }
       for (const k of Object.keys(bag)) {
         if (bag[k] === scope.container) return k
+        // §7.4 promoted: parent[k] may be an array containing scope.container.
+        if (Array.isArray(bag[k])
+            && bag[k][bag[k].length - 1] === scope.container) {
+          return k
+        }
       }
     }
     return undefined
@@ -346,13 +653,37 @@ export function createParser() {
 
   function onField(line) {
     const f = parseField(line)
-    if (!f) throw parseError('Malformed field line')
+    if (!f) {
+      throw new JMDParseError(
+        'malformed_field',
+        'Malformed field line',
+        lineNo,
+      )
+    }
     const top = stack[stack.length - 1]
-    const target = top.kind === 'object'
-      ? top.container
-      : (top.currentItem || throwHere('Bare field inside array scope without an item'))
+    let target, seen
+    if (top.kind === 'object') {
+      target = top.container
+      seen = top.seen
+    } else {
+      if (!top.currentItem) {
+        throw new JMDParseError(
+          'malformed_field',
+          'Bare field inside array scope without an item',
+          lineNo,
+        )
+      }
+      target = top.currentItem
+      if (top.itemSeen === null) top.itemSeen = new Map()
+      seen = top.itemSeen
+    }
+    checkScalar(seen, f.key, K_SCALAR_BARE)
     if (f.empty) {
       startBlockquote(target, f.key)
+      return
+    }
+    if (f.block) {
+      startBlock(target, f.key, f.block)
       return
     }
     target[f.key] = f.value
@@ -378,7 +709,11 @@ export function createParser() {
     }
     const targetIdx = sameDepthIdx !== -1 ? sameDepthIdx : parentDepthIdx
     if (targetIdx === -1) {
-      throw parseError('Depth-qualified item has no matching array scope')
+      throw new JMDParseError(
+        'malformed_heading',
+        'Depth-qualified item has no matching array scope',
+        lineNo,
+      )
     }
     // Close any scopes nested inside the target array.
     while (stack.length - 1 > targetIdx) popScope()
@@ -388,7 +723,13 @@ export function createParser() {
 
   function onItem(line) {
     const top = stack[stack.length - 1]
-    if (top.kind !== 'array') throw parseError('Array item outside array scope')
+    if (top.kind !== 'array') {
+      throw new JMDParseError(
+        'malformed_item',
+        'Array item outside array scope',
+        lineNo,
+      )
+    }
 
     closeItem(top)
     const rest = line === '-' ? '' : line.slice(2)
@@ -397,6 +738,7 @@ export function createParser() {
       const item = {}
       top.container.push(item)
       top.currentItem = item
+      top.itemSeen = new Map()
       emit('item_start')
       return
     }
@@ -406,9 +748,13 @@ export function createParser() {
       const item = {}
       top.container.push(item)
       top.currentItem = item
+      top.itemSeen = new Map()
+      top.itemSeen.set(f.key, K_SCALAR_BARE)
       emit('item_start')
       if (f.empty) {
         startBlockquote(item, f.key)
+      } else if (f.block) {
+        startBlock(item, f.key, f.block)
       } else {
         item[f.key] = f.value
         emit('field', { key: f.key, value: f.value })
@@ -419,6 +765,7 @@ export function createParser() {
     const value = parseScalar(rest)
     top.container.push(value)
     top.currentItem = null
+    top.itemSeen = null
     emit('item_value', { value })
   }
 
@@ -426,12 +773,28 @@ export function createParser() {
     const content = line.replace(/^\s+/, '')
     const top = stack[stack.length - 1]
     if (top.kind !== 'array' || !top.currentItem) {
-      throw parseError('Indented continuation without an active array item')
+      throw new JMDParseError(
+        'malformed_field',
+        'Indented continuation without an active array item',
+        lineNo,
+      )
     }
     const f = parseField(content)
-    if (!f) throw parseError('Malformed indented continuation')
+    if (!f) {
+      throw new JMDParseError(
+        'malformed_field',
+        'Malformed indented continuation',
+        lineNo,
+      )
+    }
+    if (top.itemSeen === null) top.itemSeen = new Map()
+    checkScalar(top.itemSeen, f.key, K_SCALAR_BARE)
     if (f.empty) {
       startBlockquote(top.currentItem, f.key)
+      return
+    }
+    if (f.block) {
+      startBlock(top.currentItem, f.key, f.block)
       return
     }
     top.currentItem[f.key] = f.value
@@ -441,23 +804,19 @@ export function createParser() {
   // --- Finalization --------------------------------------------------------
 
   function finish() {
+    if (block !== null) commitBlock()
     if (bq !== null) commitBlockquote()
     if (!seenRoot) {
-      throw parseError('Document contained no root heading')
+      throw new JMDParseError(
+        'malformed_root',
+        'Document contained no root heading',
+        lineNo,
+      )
     }
     while (stack.length > 0) popScope()
     emit('document_end')
     return drain()
   }
-
-  // --- Errors --------------------------------------------------------------
-
-  function parseError(msg) {
-    const err = new Error(msg + ' (line ' + lineNo + ')')
-    err.line = lineNo
-    return err
-  }
-  function throwHere(msg) { throw parseError(msg) }
 
   // --- Public surface ------------------------------------------------------
 
@@ -468,6 +827,8 @@ export function createParser() {
     if (lines.length && lines[lines.length - 1] === '') lines.pop()
     for (const line of lines) processLine(line)
     finish()
+    // frontmatterStarted is internal — keep the public shape unchanged.
+    void frontmatterStarted
     return { mode, label, frontmatter, value: root }
   }
 

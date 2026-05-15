@@ -90,8 +90,14 @@ export function serializeKey(key) {
   return JSON.stringify(key)
 }
 
-// Parse `key: value` or `key:` (empty value).
-// Returns { key, value } or { key, empty: true } or null.
+// Parse `key: value`, `key:` (empty / blockquote-opening), or
+// `key: |` / `key: >` (block-scalar opening, §5.2).
+// Returns one of:
+//   { key, value }       — scalar field
+//   { key, empty: true } — empty value, opens a blockquote field
+//   { key, block: '|' }  — literal block scalar
+//   { key, block: '>' }  — folded block scalar
+// or null if the line is not a field.
 export function parseField(line) {
   const pk = parseKey(line)
   if (!pk) return null
@@ -103,5 +109,8 @@ export function parseField(line) {
     return { key: pk.key, empty: true }
   }
   if (after.charCodeAt(0) !== 32 /* space */) return null
-  return { key: pk.key, value: parseScalar(after.slice(1)) }
+  const value = after.slice(1)
+  if (value === '|') return { key: pk.key, block: '|' }
+  if (value === '>') return { key: pk.key, block: '>' }
+  return { key: pk.key, value: parseScalar(value) }
 }

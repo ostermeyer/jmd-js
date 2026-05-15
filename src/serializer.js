@@ -20,14 +20,37 @@ import { serializeScalar, serializeKey } from './value.js'
 
 export function serialize(value, label = 'Document', frontmatter = null) {
   const lines = []
-  emitDocument(value, label, frontmatter, lines)
+  emitDocument(value, validateLabel(label), frontmatter, lines)
   return lines.join('\n')
 }
 
 export function* serializeLines(value, label = 'Document', frontmatter = null) {
   const lines = []
-  emitDocument(value, label, frontmatter, lines)
+  emitDocument(value, validateLabel(label), frontmatter, lines)
   for (const ln of lines) yield ln + '\n'
+}
+
+// D11: validate and normalize a root-heading label. Newline characters
+// would split the heading across lines and corrupt the document, so we
+// reject them outright; surrounding whitespace is silently stripped, but
+// a leading mode prefix (`- `, `? `, `! `) is preserved intact.
+export function validateLabel(label) {
+  if (typeof label !== 'string') {
+    throw new TypeError('Label must be a string')
+  }
+  if (label.includes('\n') || label.includes('\r')) {
+    throw new RangeError(
+      'JMD root labels must not contain newline characters; got '
+      + JSON.stringify(label),
+    )
+  }
+  let s = label.replace(/^\s+/, '')
+  if (s.length >= 2
+      && (s[0] === '-' || s[0] === '?' || s[0] === '!')
+      && s[1] === ' ') {
+    return s.slice(0, 2) + s.slice(2).replace(/\s+$/, '')
+  }
+  return s.replace(/\s+$/, '')
 }
 
 // Mode markers attach directly to `#` in the root heading: `#- Order`,
@@ -46,8 +69,18 @@ function splitLabel(label) {
 function emitDocument(value, label, frontmatter, lines) {
   if (frontmatter && Object.keys(frontmatter).length > 0) {
     for (const [k, v] of Object.entries(frontmatter)) {
-      if (v === true) lines.push(serializeKey(k))
-      else lines.push(serializeKey(k) + ': ' + serializeScalar(v))
+      const qk = serializeKey(k)
+      if (v === true) {
+        lines.push(qk)
+      } else if (typeof v === 'string' && v.includes('\n')) {
+        // D12: multi-line frontmatter values go in the blockquote form,
+        // matching the body serializer's handling of multi-line scalars
+        // (§9.1) so the value round-trips through frontmatter parsing.
+        lines.push(qk + ':')
+        writeMultiline(v, lines)
+      } else {
+        lines.push(qk + ': ' + serializeScalar(v))
+      }
     }
     lines.push('')
   }

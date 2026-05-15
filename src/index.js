@@ -4,5 +4,5 @@
 // Public surface: minimal on purpose. Batch API for the common case,
 // streaming API for large or incremental workloads.
 
-export { parse, createParser, toLines } from './parser.js'
-export { serialize, serializeLines } from './serializer.js'
+export { parse, createParser, toLines, JMDParseError } from './parser.js'
+export { serialize, serializeLines, validateLabel } from './serializer.js'
