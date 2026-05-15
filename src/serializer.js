@@ -167,24 +167,36 @@ function writeArrayItems(lst, lines, depth) {
     return
   }
 
-  // Heterogeneous array.
+  // Heterogeneous array — items mixing scalars, dicts, sub-arrays.
   //
-  // The C-accelerated Python reference does not insert thematic breaks
-  // inside a heterogeneous array — items simply follow one another. We
-  // match that form byte-for-byte.
+  // After any item that opens a sub-scope (a nested list, or a dict
+  // with nested fields), the NEXT item needs an explicit depth-qualified
+  // heading `## - ...` (§8.6a same-depth form) so the parser pops out
+  // of the sub-scope and attaches the item to *this* array. The
+  // qualifier uses the array's own scope depth — items[] opened by
+  // `## items[]` at depth 2 take a `## - ...` prefix.
+  const qualifier = heading(depth)
+  let needsQualifier = false
   for (const item of lst) {
     if (isPlainObject(item)) {
-      writeDictItem(item, lines, depth, false)
+      const hasNested = Object.values(item).some(isNested)
+      writeDictItem(item, lines, depth, false, needsQualifier ? qualifier : '')
+      needsQualifier = hasNested
     } else if (Array.isArray(item)) {
+      // Anonymous sub-array still opens at depth+1; only the item-
+      // qualifier shrinks to same-depth.
       lines.push(heading(depth + 1) + '[]')
       writeArrayItems(item, lines, depth + 1)
+      needsQualifier = true
     } else {
-      lines.push('- ' + serializeScalar(item))
+      const pfx = needsQualifier ? qualifier : ''
+      lines.push(pfx + '- ' + serializeScalar(item))
+      needsQualifier = false
     }
   }
 }
 
-function writeDictItem(item, lines, depth, separatorNeeded) {
+function writeDictItem(item, lines, depth, separatorNeeded, qualifierPrefix = '') {
   const scalarFields = []
   const nestedFields = []
   for (const [k, v] of Object.entries(item)) {
@@ -201,14 +213,14 @@ function writeDictItem(item, lines, depth, separatorNeeded) {
   }
 
   if (scalarFields.length === 0) {
-    lines.push('-')
+    lines.push(qualifierPrefix + '-')
   } else {
     let first = true
     for (const [k, v] of scalarFields) {
       const sv = serializeScalar(v)
       const qk = serializeKey(k)
       if (first) {
-        lines.push('- ' + qk + ': ' + sv)
+        lines.push(qualifierPrefix + '- ' + qk + ': ' + sv)
         first = false
       } else {
         lines.push('  ' + qk + ': ' + sv)
