@@ -7,8 +7,8 @@
 //   2. vendor/jmd-spec/conformance/ (git submodule, preferred in CI)
 //   3. ../jmd-spec/conformance/ (sibling checkout in a workspace)
 //
-// Each fixture is a pair <name>.jmd + <name>.json. For every pair we
-// run three tests:
+// Each canonical fixture is a pair <name>.jmd + <name>.json. For every
+// pair we run three tests:
 //
 //   1. Parse     — parse(.jmd).value deep-equals .json
 //   2. Serialize — serialize(.json, label, frontmatter) equals .jmd
@@ -22,6 +22,11 @@
 // is deliberately non-canonical (e.g. depth-qualified or depth+1 items).
 // Only the Parse test runs for those — Serialize and Round-trip would
 // re-canonicalize and therefore diverge.
+//
+// Fixtures under `must-fail/` are inputs the parser MUST reject; each is
+// a pair <name>.jmd + <name>.error.json describing the expected kind
+// and line. Only a single Must-Fail test runs for each — wording and
+// exception subclass identity are implementation-specific.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -29,7 +34,7 @@ import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
-import { parse, serialize } from '../src/index.js'
+import { parse, serialize, JMDParseError } from '../src/index.js'
 
 const MODE_PREFIX = { data: '', schema: '! ', query: '? ', delete: '- ' }
 
@@ -62,6 +67,15 @@ function listPairs(modeDir) {
   return [...bases].sort().filter(b => files.includes(b + '.json'))
 }
 
+function listMustFailPairs(modeDir) {
+  const files = readdirSync(modeDir)
+  const bases = new Set()
+  for (const f of files) {
+    if (f.endsWith('.jmd')) bases.add(f.slice(0, -4))
+  }
+  return [...bases].sort().filter(b => files.includes(b + '.error.json'))
+}
+
 function labelArg(mode, label) {
   return (MODE_PREFIX[mode] ?? '') + label
 }
@@ -73,6 +87,31 @@ if (!root) {
 } else {
   for (const mode of listModes(root)) {
     const modeDir = path.join(root, mode)
+
+    if (mode === 'must-fail') {
+      for (const name of listMustFailPairs(modeDir)) {
+        const jmdText = readFileSync(
+          path.join(modeDir, name + '.jmd'), 'utf8',
+        )
+        const expected = JSON.parse(readFileSync(
+          path.join(modeDir, name + '.error.json'), 'utf8',
+        ))
+        test(`must-fail/${name}`, () => {
+          assert.throws(
+            () => parse(jmdText),
+            err => {
+              assert.ok(err instanceof JMDParseError,
+                'expected JMDParseError, got ' + err.constructor.name)
+              assert.equal(err.kind, expected.kind)
+              assert.equal(err.line, expected.line)
+              return true
+            },
+          )
+        })
+      }
+      continue
+    }
+
     const parseOnly = mode === 'tolerance'
     for (const name of listPairs(modeDir)) {
       const jmdText = readFileSync(path.join(modeDir, name + '.jmd'), 'utf8')
