@@ -155,11 +155,15 @@ export function createParser() {
 
   function onThematicBreak() {
     blankPending = false
-    // A thematic break is consumed by the innermost enclosing array whose
-    // most-recent item is a dict containing nested structures — this is
-    // the only context where jmd-format emits the break, and the parser
-    // mirrors that rule (spec §8.6). Inner scopes are closed; if no array
-    // on the stack qualifies, the line is tolerated as decoration.
+    // A thematic break closes any sub-scope opened by the most-recent
+    // item, then signals the next item of the enclosing array (spec §8.6).
+    // We search outward for the innermost array whose last item opened a
+    // sub-structure and close down to it. If none qualifies, the break is
+    // a no-op — and that is correct, not lossy: a flat item opens no
+    // sub-scope, so the enclosing array is still current and the next
+    // `- ` item continues it. This is why a `---` after a flat item in a
+    // mixed array (canonical per the v0.3.4 §8.6 clarification) parses
+    // without dropping the following item.
     let targetIdx = -1
     for (let i = stack.length - 1; i >= 0; i--) {
       const s = stack[i]
