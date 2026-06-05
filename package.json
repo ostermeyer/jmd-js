@@ -1,6 +1,6 @@
 {
   "name": "jmd-format",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "JMD (JSON Markdown) — structured data format for LLM-driven infrastructure. JavaScript reference implementation.",
   "type": "module",
   "main": "./src/index.js",

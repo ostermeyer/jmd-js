@@ -127,10 +127,12 @@ export function createParser() {
       return drain()
     }
 
-    // Thematic break: `---` (or more) at column 0, only meaningful inside
-    // an array scope, where it terminates the current item.
+    // Thematic break `---` is pure decoration (§8.6): the level-pop (an
+    // anonymous heading) is the structural mechanism, so a `---` line is
+    // skipped. It consumes any pending blank, so a following `- ` item
+    // still joins the current array instead of triggering a root reset.
     if (/^-{3,}$/.test(line)) {
-      onThematicBreak()
+      blankPending = false
       return drain()
     }
 
@@ -151,34 +153,6 @@ export function createParser() {
     emit('scope_reset')
     while (stack.length > 1) popScope()
     if (stack[0] && stack[0].kind === 'array') closeItem(stack[0])
-  }
-
-  function onThematicBreak() {
-    blankPending = false
-    // A thematic break closes any sub-scope opened by the most-recent
-    // item, then signals the next item of the enclosing array (spec §8.6).
-    // We search outward for the innermost array whose last item opened a
-    // sub-structure and close down to it. If none qualifies, the break is
-    // a no-op — and that is correct, not lossy: a flat item opens no
-    // sub-scope, so the enclosing array is still current and the next
-    // `- ` item continues it. This is why a `---` after a flat item in a
-    // mixed array (canonical per the v0.3.4 §8.6 clarification) parses
-    // without dropping the following item.
-    let targetIdx = -1
-    for (let i = stack.length - 1; i >= 0; i--) {
-      const s = stack[i]
-      if (s.kind !== 'array') continue
-      const last = s.container[s.container.length - 1]
-      if (last && typeof last === 'object' && !Array.isArray(last)
-          && Object.values(last).some(
-            v => v !== null && typeof v === 'object')) {
-        targetIdx = i
-        break
-      }
-    }
-    if (targetIdx === -1) return
-    while (stack.length - 1 > targetIdx) popScope()
-    closeItem(stack[targetIdx])
   }
 
   // --- Blockquote ----------------------------------------------------------
@@ -374,12 +348,24 @@ export function createParser() {
       return
     }
 
-    popToDepth(depth)
-
+    // Anonymous heading at depth D. If an array scope is open at exactly
+    // this depth, the heading is a level-pop (§8.6): return to that array
+    // — drop any deeper sub-scopes and close the record that opened them,
+    // so the next `- ` item joins THIS array. One marker pops arbitrary
+    // nesting in a single step. Otherwise it is a §3.2a anonymous object.
     if (text === '' || text === undefined) {
+      const arr = arrayScopeAtDepth(depth)
+      if (arr) {
+        popToDepth(depth + 1)
+        closeItem(arr)
+        return
+      }
+      popToDepth(depth)
       openObjectScope(depth, '')
       return
     }
+
+    popToDepth(depth)
 
     // Anonymous sub-array: `### []` — handled below with the other array forms.
     if (text === '[]') {
@@ -572,6 +558,20 @@ export function createParser() {
       'No enclosing scope for depth ' + depth,
       lineNo,
     )
+  }
+
+  // Find an open array scope at exactly this depth, scanning from the top.
+  // Used to disambiguate an anonymous heading: an array at the heading's
+  // own depth means the heading is a level-pop (§8.6), not a §3.2a
+  // anonymous object. Returns null if the first scope at depth ≤ D is not
+  // such an array.
+  function arrayScopeAtDepth(depth) {
+    for (let i = stack.length - 1; i >= 0; i--) {
+      const s = stack[i]
+      if (s.depth > depth) continue
+      return (s.depth === depth && s.kind === 'array') ? s : null
+    }
+    return null
   }
 
   function parentContainerAndSeen(scope) {

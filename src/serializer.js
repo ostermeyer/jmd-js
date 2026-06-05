@@ -152,10 +152,8 @@ function writeArrayItems(lst, lines, depth) {
   }
 
   if (allDicts) {
-    const hasNested = lst.some(item =>
-      Object.values(item).some(isNested))
     for (let i = 0; i < lst.length; i++) {
-      writeDictItem(lst[i], lines, depth, i > 0 && hasNested)
+      writeDictItem(lst[i], lines, depth, i < lst.length - 1)
     }
     return
   }
@@ -196,20 +194,12 @@ function writeArrayItems(lst, lines, depth) {
   }
 }
 
-function writeDictItem(item, lines, depth, separatorNeeded, qualifierPrefix = '') {
+function writeDictItem(item, lines, depth, moreFollow, qualifierPrefix = '') {
   const scalarFields = []
   const nestedFields = []
   for (const [k, v] of Object.entries(item)) {
     if (isNested(v)) nestedFields.push([k, v])
     else scalarFields.push([k, v])
-  }
-
-  if (separatorNeeded) {
-    // Match the C-accelerated Python serializer (the default in jmd-format):
-    // blank line before the `---`, but the next `- ` follows immediately on
-    // the next line — no blank after the thematic break.
-    lines.push('')
-    lines.push('---')
   }
 
   if (scalarFields.length === 0) {
@@ -230,6 +220,13 @@ function writeDictItem(item, lines, depth, separatorNeeded, qualifierPrefix = ''
 
   if (nestedFields.length > 0) {
     writeObjectFields(Object.fromEntries(nestedFields), lines, depth)
+    // Level-pop (§8.6): this record opened a sub-structure (heading at
+    // depth+1). If more records follow, emit an anonymous heading at the
+    // array's own depth to pop back, so the next bare `-` item is read into
+    // THIS array. The last record needs no pop — end-of-scope closes it.
+    if (moreFollow) {
+      lines.push('#'.repeat(depth))
+    }
   }
 }
 
